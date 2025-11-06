@@ -4,7 +4,7 @@ import torch
 
 from .ae import PatchAutoEncoder
 
-
+#used help from copilot and chatgpt to implement the autoregressive model
 def load() -> torch.nn.Module:
     from pathlib import Path
 
@@ -95,9 +95,15 @@ class BSQ(torch.nn.Module):
         return self.decode(self.encode(x))
 
     def encode_index(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Run BQS and encode the input tensor x into a set of integer tokens
+        """
         return self._code_to_index(self.encode(x))
 
     def decode_index(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Decode a set of integer tokens into an image.
+        """
         return self.decode(self._index_to_code(x))
 
     def _code_to_index(self, x: torch.Tensor) -> torch.Tensor:
@@ -153,6 +159,10 @@ class BSQPatchAutoEncoder(PatchAutoEncoder, Tokenizer):
         return img
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """
+        Return the reconstructed image and a dictionary of additional loss terms you would like to
+        minimize (or even just visualize).
+        """
         reconstructed = self.decode(self.encode(x))
         tokens = self.encode_index(x)
         cnt = torch.bincount(tokens.flatten(), minlength=2 ** self.codebook_bits)

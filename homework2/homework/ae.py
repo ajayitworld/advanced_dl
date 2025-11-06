@@ -2,7 +2,7 @@ import abc
 
 import torch
 
-
+#used help from copilot and chatgpt to implement the autoregressive model
 def load() -> torch.nn.Module:
     from pathlib import Path
 

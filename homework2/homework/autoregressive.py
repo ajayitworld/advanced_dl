@@ -11,7 +11,7 @@ def load() -> torch.nn.Module:
     print(f"Loading {model_name} from {model_path}")
     return torch.load(model_path, weights_only=False)
 
-
+#used help from copilot and chatgpt to implement the autoregressive model
 class Autoregressive(abc.ABC):
     """
     Base class for all autoregressive models.
