@@ -1,0 +1,41 @@
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+
+model1_name = "HuggingFaceTB/SmolLM2-360M-Instruct"
+model2_name = "gpt2"
+
+tokenizer1 = AutoTokenizer.from_pretrained(model1_name)
+tokenizer2 = AutoTokenizer.from_pretrained(model2_name)
+
+model1 = AutoModelForCausalLM.from_pretrained(model1_name)
+model2 = AutoModelForCausalLM.from_pretrained(model2_name)
+
+prompt = "What is the capital of France?"
+
+tokens1 = tokenizer1(prompt)
+tokens2 = tokenizer2(prompt)
+
+tokens1_pt = tokenizer1(prompt, return_tensors="pt")
+tokens2_pt = tokenizer2(prompt, return_tensors="pt")
+
+print(f"Tokens: {tokens1}")
+print(f"Tokens: {tokens2}")
+
+print(f"Tokens: {tokens1_pt}")
+print(f"Tokens: {tokens2_pt}")
+
+input_text1 = tokenizer1.decode(tokens1['input_ids'])
+input_text2 = tokenizer2.decode(tokens2['input_ids'])
+
+with torch.no_grad():
+    output1 = model1.generate(**tokens1_pt, max_new_tokens=50, do_sample=False, eos_token_id=tokenizer1.eos_token_id)
+    output2 = model2.generate(**tokens2_pt, max_new_tokens=50, do_sample=False, eos_token_id=tokenizer2.eos_token_id)
+
+generated_text1 = tokenizer1.batch_decode(output1[:, tokens1_pt["input_ids"].shape[1]:], skip_special_tokens=True)
+generated_text2 = tokenizer2.batch_decode(output2[:, tokens2_pt["input_ids"].shape[1]:], skip_special_tokens=True)
+
+print(f"Output Tokens 1: {output1}")
+print(f"Output Tokens 2: {output1}")
+
+print(f"Generated Text 1: {generated_text1}")
+print(f"Generated Text 2: {generated_text2}")

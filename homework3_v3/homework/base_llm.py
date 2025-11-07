@@ -105,7 +105,111 @@ class BaseLLM:
                 for r in self.batched_generate(prompts[idx : idx + micro_batch_size], num_return_sequences, temperature)
             ]
 
-        raise NotImplementedError()
+        # Quick return for empty input
+        if len(prompts) == 0:
+            return [] if num_return_sequences is None else []
+
+        # Ensure left padding so generation aligns on the right
+        self.tokenizer.padding_side = "left"
+
+        # Tokenize prompts with padding (align on right) and get attention mask
+        inputs = self.tokenizer(prompts, padding=True, return_tensors="pt")
+
+        input_ids = inputs["input_ids"].to(self.device)
+        attention_mask = inputs.get("attention_mask")
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(self.device)
+
+        # Configure generation parameters
+        do_sample = temperature is not None and temperature > 0
+        n_return = 1 if num_return_sequences is None else int(num_return_sequences)
+
+        outputs = self.model.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=50,
+            do_sample=do_sample,
+            temperature=float(temperature),
+            num_return_sequences=n_return,
+            eos_token_id=self.tokenizer.eos_token_id,
+        )
+
+        # outputs shape: (batch_size * num_return_sequences, seq_len)
+        #input_len = input_ids.shape[1]
+
+        # Only decode the newly generated tokens (mask out the prompt)
+        #gen_tokens = outputs[:, input_len:]
+        gen_tokens = outputs[:, len(inputs["input_ids"][0]) :]
+        # Move to CPU and convert to python lists for tokenizer decoding
+        gen_tokens_list = gen_tokens.cpu().tolist()
+
+        # Decode generated tokens
+        decoded = self.tokenizer.batch_decode(gen_tokens_list, skip_special_tokens=True)
+
+        # If single return sequence per prompt, return flat list[str]
+        if num_return_sequences is None:
+            # decoded is already in order corresponding to prompts
+            return decoded
+
+        # Otherwise, group decoded outputs per prompt
+        grouped: list[list[str]] = []
+        for i in range(0, len(decoded), n_return):
+            grouped.append(decoded[i : i + n_return])
+
+        return grouped
+    
+
+        '''
+        outputs_cpu = outputs.cpu().tolist()
+        decoded_full = self.tokenizer.batch_decode(outputs_cpu, skip_special_tokens=True)
+
+        # Reconstruct prompt text per sample (without padding) using attention mask
+        # inputs["input_ids"] is padded on the left; attention_mask indicates real tokens.
+        input_ids_cpu = inputs["input_ids"].tolist()
+        attention_mask_cpu = inputs.get("attention_mask")
+        if attention_mask_cpu is not None:
+            attention_mask_cpu = attention_mask_cpu.tolist()
+        else:
+            # If no attention mask provided, assume all tokens are real
+            attention_mask_cpu = [[1] * len(ids) for ids in input_ids_cpu]
+
+        prompt_texts: list[str] = []
+        for ids, mask in zip(input_ids_cpu, attention_mask_cpu):
+            # extract non-padded token ids
+            prompt_ids = [tok for tok, m in zip(ids, mask) if m]
+            prompt_texts.append(self.tokenizer.decode(prompt_ids, skip_special_tokens=True))
+
+        # Now strip the prompt_text from the decoded_full to get continuations
+        continuations: list[str] = []
+        for i_out, full in enumerate(decoded_full):
+            # Determine which prompt this output corresponds to
+            prompt_idx = i_out // n_return
+            prompt_txt = prompt_texts[prompt_idx]
+            # If full starts with prompt_txt, strip it; otherwise try a safer rsplit
+            if full.startswith(prompt_txt):
+                cont = full[len(prompt_txt) :]
+            else:
+                # fallback: remove the first occurrence of prompt_txt if present
+                idx = full.find(prompt_txt)
+                if idx != -1:
+                    cont = full[idx + len(prompt_txt) :]
+                else:
+                    # last resort: assume full is just the continuation
+                    cont = full
+
+            continuations.append(cont)
+
+        # If single return sequence per prompt, return flat list[str]
+        if num_return_sequences is None:
+            return continuations
+
+        # Otherwise, group decoded outputs per prompt
+        grouped: list[list[str]] = []
+        for i in range(0, len(continuations), n_return):
+            grouped.append(continuations[i : i + n_return])
+
+        return grouped
+        '''
 
     def answer(self, *questions) -> list[float]:
         """
