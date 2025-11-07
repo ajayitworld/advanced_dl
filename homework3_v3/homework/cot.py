@@ -38,7 +38,15 @@ class CoTModel(BaseLLM):
         # Convert the chat messages into the model's chat template string.
         # add_generation_prompt=True will append the assistant generation prompt token
         # tokenize=False returns the raw string (not token ids)
-        return self.tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+        formatted_prompt = self.tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+        
+        # Print the formatted prompt to see the chat template structure
+        #print("\nFormatted Chat Template:")
+        #print("="*50)
+        #print(formatted_prompt)
+        #print("="*50)
+        
+        return formatted_prompt
 
 
 def load() -> CoTModel:
