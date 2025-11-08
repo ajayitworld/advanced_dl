@@ -49,8 +49,8 @@ class CoTModel(BaseLLM):
         return formatted_prompt
 
 
-def load() -> CoTModel:
-    return CoTModel()
+def load(checkpoint: str | None = None) -> CoTModel:
+    return CoTModel(checkpoint)
 
 
 def test_model():
