@@ -37,24 +37,35 @@ def tokenize(tokenizer, question: str, answer: str):
     # Create labels: mask out the prompt part
     labels = [-100] * question_len + input_ids[question_len:]
 
+    # Ensure labels is same length as input_ids
+    labels = labels[:len(input_ids)]
+    
     for i in range(len(labels)):
         if full["attention_mask"][i] == 0:
             labels[i] = -100
 
-    full["labels"] = labels
-    return full
+    # Convert to dict with all values as lists (not tensors)
+    return {
+        "input_ids": full["input_ids"],
+        "attention_mask": full["attention_mask"],
+        "labels": labels
+    }
 
 
-def format_example(prompt: str, answer: float) -> dict[str, str]:
+def format_example(prompt: str, answer: str) -> dict[str, str]:
     """
     Construct a question / answer pair. Consider rounding the answer to make it easier for the LLM.
-    Round to 3 decimal places for cleaner training targets while maintaining accuracy.
     """
-    # Format answer to 3 decimal places to avoid float precision issues
-    answer_str = f"<answer>{answer:.3f}</answer>"
+    # Round the answer to 2 decimal places for easier learning
+    answer_float = float(answer)
+    rounded_answer = round(answer_float, 2)
+    
+    # Format as requested: <answer>{answer}</answer>
+    formatted_answer = f"<answer>{rounded_answer}</answer>"
+    
     return {
         "question": prompt,
-        "answer": answer_str
+        "answer": formatted_answer
     }
 
 
@@ -80,102 +91,121 @@ class TokenizedDataset:
         return tokenize(self.tokenizer, **formated_data)
 
 
-def get_lora_param_size(model) -> float:
-    """Calculate size of LoRA parameters in MB"""
-    import numpy as np
-    lora_params = 0
-    for n, p in model.named_parameters():
-        if 'lora_' in n:
-            lora_params += np.prod(p.shape)
-    return (lora_params * 4) / (1024 * 1024)  # Size in MB assuming float32
+def data_collator(features):
+    """
+    Custom data collator that properly batches tokenized samples.
+    """
+    import torch
+    
+    # Extract fields
+    input_ids = [f["input_ids"] for f in features]
+    attention_mask = [f["attention_mask"] for f in features]
+    labels = [f["labels"] for f in features]
+    
+    # Stack into tensors
+    batch = {
+        "input_ids": torch.tensor(input_ids, dtype=torch.long),
+        "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
+        "labels": torch.tensor(labels, dtype=torch.long),
+    }
+    
+    return batch
+
 
 def train_model(
-    output_dir: str,
+    output_dir: str = "homework/sft_model",
     num_epochs: int = 5,
     batch_size: int = 32,
-    learning_rate: float = 2e-4,
+    learning_rate: float = 1e-3,
     lora_r: int = 8,  # rank of LoRA adapters
     lora_alpha: int = 32,  # alpha scaling, typically 4-8x rank
     **kwargs,
 ):
-    """Train the model using LoRA adapters and HuggingFace Trainer.
-    
-    Args:
-        output_dir: Directory to save checkpoints and logs
-        num_epochs: Number of training epochs (default 5)
-        batch_size: Batch size per device (default 32)
-        learning_rate: Learning rate (default 2e-4)
-        lora_r: LoRA rank dimension (default 8)
-        lora_alpha: LoRA alpha scaling factor (default 32)
-    """
-    from pathlib import Path
-    from peft import get_peft_model, LoraConfig, TaskType
-    from transformers import TrainingArguments, Trainer
     import torch
-
-    # Initialize base model and dataset
-    llm = BaseLLM()
-    trainset = Dataset("train")
+    from transformers import Trainer, TrainingArguments
+    from peft import LoraConfig, get_peft_model, TaskType
+    from pathlib import Path
     
-    # Configure LoRA - use all linear layers, no bias
+    # Initialize base model
+    print("Initializing BaseLLM...")
+    llm = BaseLLM()
+    
+    # Create LoRA config
+    # Using r=8 to keep model size under 20MB
+    # lora_alpha = 4-5 times rank, so 32-40
+    print("Creating LoRA configuration...")
     lora_config = LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        inference_mode=False,
-        r=lora_r,
-        lora_alpha=lora_alpha,
+        r=8,
+        lora_alpha=32,
         target_modules="all-linear",
+        lora_dropout=0.05,
         bias="none",
+        task_type=TaskType.CAUSAL_LM,
     )
     
-    # Convert to LoRA model
-    model = get_peft_model(llm.model, lora_config)
-    if torch.cuda.is_available():
-        model.enable_input_require_grads()  # Required for gradient checkpointing + LoRA
+    # Convert model to LoRA
+    print("Converting model to LoRA...")
+    llm.model = get_peft_model(llm.model, lora_config)
+    llm.model.enable_input_require_grads()
+    # Print trainable parameters
+    llm.model.print_trainable_parameters()
+
+    for name, param in llm.model.named_parameters():
+        if 'lora_' not in name:  # If not a LoRA parameter
+            param.requires_grad = False  # Freeze the parameter
+        else:
+            param.data = param.data.to(torch.float32)  # Convert LoRA params to float32
     
-    # Create output directory
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Load training data
+    print("Loading training data...")
+    train_dataset = Dataset("train")
+    tokenized_train = TokenizedDataset(llm.tokenizer, train_dataset, format_example)
+    
+    # Setup output directory
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
     
     # Training arguments
+    print("Setting up training arguments...")
     training_args = TrainingArguments(
-        output_dir=str(output_dir),
+        output_dir=str(output_path),
+        logging_dir=str(output_path),
+        report_to="tensorboard",
         num_train_epochs=num_epochs,
-        per_device_train_batch_size=batch_size,
-        gradient_accumulation_steps=1,
+        per_device_train_batch_size=batch_size,  
+        gradient_checkpointing=True,  # Disabled to avoid gradient issues
         learning_rate=learning_rate,
-        logging_dir=str(output_dir),
+        weight_decay=0.01,
         logging_steps=10,
         save_strategy="epoch",
-        report_to="tensorboard",
-        gradient_checkpointing=True,
-        # Add fp16 for faster training if supported
-        fp16=torch.cuda.is_available(),
-        # Optimize memory usage
-        optim="adamw_torch",
-        lr_scheduler_type="cosine",
-        warmup_ratio=0.1,
+        save_total_limit=2,
+        #fp16=torch.cuda.is_available(),
+        dataloader_num_workers=0,
+        remove_unused_columns=False,
     )
     
-    # Create dataset with our formatting
-    dataset = TokenizedDataset(llm.tokenizer, trainset, format_example)
-    
-    # Initialize trainer
+    # Create trainer with custom data collator
+    print("Creating trainer...")
     trainer = Trainer(
-        model=model,
+        model=llm.model,
         args=training_args,
-        train_dataset=dataset,
-        data_collator=lambda x: x,  # Identity since dataset already returns proper format
+        train_dataset=tokenized_train,
+        data_collator=data_collator,
     )
     
-    # Train and save
+    # Train
+    print("Starting training...")
     trainer.train()
     
-    # Save the final model to sft_model directory for the grader
-    final_output = Path(__file__).parent / "sft_model"
-    model.save_pretrained(final_output)
+    # Save the final model
+    print(f"Saving model to {output_path}...")
+    trainer.save_model(str(output_path))
     
-    # Run test to verify
-    test_model(final_output)
+    print("Training complete!")
+    
+    # Test the model
+    print("\nTesting trained model...")
+    test_model(output_dir)
 
 
 def test_model(ckpt_path: str):
