@@ -1,3 +1,4 @@
+# used copilot, chatgpt and other online help
 def generate_dataset(output_json: str, oversample: int = 10, temperature: float = 0.6):
     """Generate an RFT dataset using a CoT model.
 

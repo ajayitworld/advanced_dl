@@ -1,6 +1,6 @@
 from .base_llm import BaseLLM
 
-
+# used copilot, chatgpt and other online help
 class CoTModel(BaseLLM):
     def format_prompt(self, question: str) -> str:
         """
@@ -49,9 +49,11 @@ class CoTModel(BaseLLM):
         return formatted_prompt
 
 
-def load(checkpoint: str | None = None) -> CoTModel:
+def load(checkpoint: str) -> CoTModel:
     return CoTModel(checkpoint)
 
+def load() -> CoTModel:
+    return CoTModel()
 
 def test_model():
     from .data import Dataset, benchmark
