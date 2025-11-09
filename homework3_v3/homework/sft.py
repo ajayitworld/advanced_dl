@@ -26,6 +26,7 @@ def tokenize(tokenizer, question: str, answer: str):
     the answer.
     """
     full_text = f"{question} {answer}{tokenizer.eos_token}"
+    #print('full_text', full_text)
 
     tokenizer.padding_side = "right"
     tokenizer.pad_token = tokenizer.eos_token

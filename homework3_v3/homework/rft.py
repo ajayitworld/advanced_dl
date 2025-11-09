@@ -9,6 +9,7 @@ def load() -> BaseLLM:
 
     model_name = "rft_model"
     model_path = Path(__file__).parent / model_name
+    print('model_path ', model_path)
 
     llm = BaseLLM()
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
@@ -30,6 +31,7 @@ def train_model(
 
     # Load the RFT dataset
     rft_path = Path(kwargs.get("rft_json", "data/rft.json"))
+    #print('rft_path ', rft_path)
     if not rft_path.exists():
         print(f"RFT dataset not found at {rft_path}. Run datagen.generate_dataset first.")
         print("  python -m homework.datagen")                
@@ -39,6 +41,8 @@ def train_model(
         entries = json.load(f)
 
     # entries are [question, answer, reasoning]
+    #print('entries ', entries)
+
     llm = BaseLLM()
 
     # Configure LoRA
@@ -59,26 +63,7 @@ def train_model(
     if torch.cuda.is_available():
         model.enable_input_require_grads()
 
-    # Freeze non-lora params
-    for name, param in model.named_parameters():
-        if 'lora_' not in name:
-            param.requires_grad = False
-
-    '''
-    # Prepare training texts (question + reasoning including <answer> tags)
-    texts = [f"{q} {reasoning}{llm.tokenizer.eos_token}" for q, _, reasoning in entries]
-    
-    toks = llm.tokenizer(
-        texts,
-        padding="max_length",
-        truncation=True,
-        max_length=256,
-        return_tensors="pt",
-    )
-    toks["labels"] = toks["input_ids"].clone()
-    '''
-
-    def format_rft_example(question: str, reasoning: str, answer: str) -> dict[str,str]:
+    def format_rft_example(question: str, answer: str, reasoning: str) -> dict[str,str]:
       return {
         "question": question,
         "answer": reasoning  # Reasoning includes the full chain of thought + answer
@@ -97,20 +82,25 @@ def train_model(
         def __getitem__(self, idx):
             #return {k: v[idx] for k, v in self.toks.items()}             
              formatted_data = self.format_fn(*self.toks[idx])
+             #print('formatted_data', formatted_data)
              return tokenize(self.tokenizer, **formatted_data)
 
 
     train_ds = SimpleDataset(llm.tokenizer, entries, format_rft_example)
 
     # Training arguments
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Setup output directory
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    print('output_path ', output_path)
+    
+
     training_args = TrainingArguments(
-        output_dir=str(output_dir),
+        output_dir=str(output_path),
         num_train_epochs=int(kwargs.get("num_epochs", 3)),
         per_device_train_batch_size=int(kwargs.get("batch_size", 16)),
         learning_rate=float(kwargs.get("learning_rate", 1e-3)),
-        logging_dir=str(output_dir),
+        logging_dir=str(output_path),
         logging_steps=10,
         save_strategy="epoch",
         report_to="tensorboard",
@@ -123,16 +113,21 @@ def train_model(
         train_dataset=train_ds,
         data_collator=data_collator,
     )
-
+    
     trainer.train()
 
     # Save LoRA adapter
-    model.save_pretrained(Path(output_dir) / "rft_model")
+    print(f"Saving model to {output_path}...")
+    trainer.save_model(Path(output_path))
 
-    print("RFT training finished and saved to", str(output_dir))
+    print("RFT training finished and saved to", str(output_path))
+
+    # Test the model
+    print("\nTesting trained model...")
+    test_model(output_path)
 
 
-def test_rft_model(ckpt_path: str = "homework/rft_model"):
+def test_model(ckpt_path: str = "homework/rft_model"):
     """Test the RFT model"""
     from .data import Dataset, benchmark
     from peft import PeftModel
@@ -145,6 +140,7 @@ def test_rft_model(ckpt_path: str = "homework/rft_model"):
     llm.model.eval()
 
     benchmark_result = benchmark(llm, testset, 100)
+    print('benchmark_result', benchmark_result)
     print(f"{benchmark_result.accuracy=}  {benchmark_result.answer_rate=}")
 
 if __name__ == "__main__":
