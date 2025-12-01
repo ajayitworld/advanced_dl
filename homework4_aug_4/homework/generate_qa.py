@@ -1,4 +1,4 @@
-
+# used coilot and chatgpt and online help
 import json
 from pathlib import Path
 
@@ -317,7 +317,7 @@ def generate_qa_pairs(info_path: str, view_index: int, img_width: int = 150, img
         else:
             right_count += 1
         # Front/Behind (y axis: top is 0, so smaller y is in front)
-        fb = 'in front of' if dy < 0 else 'behind'
+        fb = 'front' if dy < 0 else 'back'
         if dy < 0:
             front_count += 1
         else:
