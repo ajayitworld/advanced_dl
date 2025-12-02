@@ -1,3 +1,4 @@
+#used copilot and online help
 from pathlib import Path
 from typing import Any
 
@@ -101,14 +102,28 @@ class CLIP(nn.Module):
         super().__init__()
         self.vision_encoder = vision_encoder
         self.text_encoder = text_encoder
-        # TODO: implement the rest components
-        raise NotImplementedError("Not implemented")
+        self.proj_dim = proj_dim
+        self.temperature = temperature
+        
+        # Get output dimensions from encoders
+        # Vision encoder output size (from vision_model)
+        vision_feature_dim = vision_encoder.config.hidden_size
+        # Text encoder output size (from text_model)
+        text_feature_dim = text_encoder.config.hidden_size
+        
+        # Projection layers
+        self.vision_projection = nn.Linear(vision_feature_dim, proj_dim)
+        self.text_projection = nn.Linear(text_feature_dim, proj_dim)
 
-    def encode_image(self, image: torch.Tensor) -> torch.Tensor:
-        return self.vision_encoder(image)
+        
 
-    def encode_text(self, text: str) -> torch.Tensor:
-        return self.text_encoder(text)
+    def encode_image(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        """Encode image pixels to encoder output."""
+        return self.vision_encoder(pixel_values)
+
+    def encode_text(self, input_ids: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
+        """Encode text tokens to encoder output."""
+        return self.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
 
     def save_pretrained(self, save_directory: str, **kwargs):
         """Customize save method, save additional parameters"""
@@ -160,6 +175,23 @@ class CLIP(nn.Module):
         self.vision_encoder.embeddings.register_forward_hook(make_inputs_require_grads)
         self.text_encoder.get_input_embeddings().register_forward_hook(make_inputs_require_grads)
 
+    def _pool_encoder_output(self, outputs, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
+        if hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
+            return outputs.pooler_output
+        if hasattr(outputs, "last_hidden_state") and outputs.last_hidden_state is not None:
+            last = outputs.last_hidden_state  # (B, L, H)
+            # Prefer class token if present
+            #if last.shape[1] > 1:
+            #    return last[:, 0, :]           # CLS / class token
+            # Otherwise do mean pooling
+            if attention_mask is not None:
+                mask = attention_mask.unsqueeze(-1).to(dtype=last.dtype)
+                summed = (last * mask).sum(dim=1)
+                denom = mask.sum(dim=1).clamp(min=1e-9)
+                return summed / denom
+            return last.mean(dim=1)
+        raise ValueError("No pooler_output or last_hidden_state found")
+
     def forward(
         self,
         pixel_values: torch.Tensor,
@@ -180,7 +212,26 @@ class CLIP(nn.Module):
         Returns:
             TODO: think about the what values should be returned
         """
-        raise NotImplementedError("Not implemented")
+        # Encode images and robustly pool to (B, H)
+        vision_outputs = self.encode_image(pixel_values)
+        image_features = self._pool_encoder_output(vision_outputs)
+
+        # Encode text and robustly pool to (B, H)
+        text_outputs = self.encode_text(input_ids=input_ids, attention_mask=attention_mask)
+        text_features = self._pool_encoder_output(text_outputs, attention_mask=attention_mask)
+        
+        # Project to shared embedding space
+        image_embeddings = self.vision_projection(image_features)  # [batch_size, proj_dim]
+        text_embeddings = self.text_projection(text_features)  # [batch_size, proj_dim]
+        
+        # Normalize embeddings
+        image_embeddings = image_embeddings / (image_embeddings.norm(dim=-1, keepdim=True) + 1e-8)
+        text_embeddings = text_embeddings / (text_embeddings.norm(dim=-1, keepdim=True) + 1e-8)
+        
+        # Compute logits
+        logits = torch.matmul(image_embeddings, text_embeddings.T) / self.temperature
+        
+        return image_embeddings, text_embeddings, logits
 
 
 def compute_clip_loss(
@@ -199,7 +250,21 @@ def compute_clip_loss(
     Returns:
         The loss for the CLIP model.
     """
-    raise NotImplementedError("Not implemented")
+    image_embeddings, text_embeddings, logits = outputs
+    batch_size = image_embeddings.shape[0]
+    
+    # Create ground truth labels (diagonal elements are the correct matches)
+    gt_labels = torch.arange(batch_size, device=image_embeddings.device)
+    
+    # Compute loss: NT-Xent (normalized temperature-scaled cross entropy)
+    # Loss is symmetric: image->text and text->image
+    loss_i2t = nn.functional.cross_entropy(logits, gt_labels)
+    loss_t2i = nn.functional.cross_entropy(logits.T, gt_labels)
+    
+    # Combine both losses
+    loss = (loss_i2t + loss_t2i) / 2
+    
+    return loss
 
 
 def get_target_modules_for_lora(model: nn.Module) -> list[str]:
@@ -218,12 +283,13 @@ def get_target_modules_for_lora(model: nn.Module) -> list[str]:
 
 def train(
     data_dir: Path | None = None,
-    output_dir: str = "clip",
-    num_train_epochs: float = 0.05,  # for debugging purpose, increase this once the dry run works
+    output_dir: str = "clip_model",
+    num_train_epochs: float = 3,  # for debugging purpose, increase this once the dry run works
     per_device_train_batch_size: int = 1024,
     gradient_accumulation_steps: int = 1,
     learning_rate: float = 5e-4,
     num_workers: int = 16,
+    train_dataset_name: str = "train",
 ):
     vlm = BaseVLM()
 
@@ -259,7 +325,7 @@ def train(
     model.enable_input_require_grads()
 
     # load dataset
-    train_dataset = CaptionDataset("train", data_dir)
+    train_dataset = CaptionDataset(train_dataset_name, data_dir)
     train_dataset = CaptionDatasetForTraining(train_dataset, processor)
 
     training_args = TrainingArguments(
@@ -354,7 +420,7 @@ def test(ckpt_path: str, val_dataset: str = "valid_grader"):
 def main():
     from fire import Fire
 
-    Fire({"train": train, "test": test})
+    Fire({"train": train, "test": test, "demo_train": demo_train})
 
 
 if __name__ == "__main__":

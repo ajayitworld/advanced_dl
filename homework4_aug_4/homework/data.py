@@ -62,10 +62,11 @@ class VQADataset:
 class CaptionDataset:
     def __init__(self, split: str, data_dir: Path = None, max_samples: int = None):
         self.data_dir = data_dir or DATA_DIR
-
+        print
         self.captions = []
 
         caption_files = list(self.data_dir.glob(f"{split}/*_captions.json"))
+        print(f"Found {len(caption_files)} caption files for {split} split")
 
         for caption_file in caption_files:
             with open(caption_file) as f:
